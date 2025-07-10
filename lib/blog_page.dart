@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'package:flutter/foundation.dart'; 
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -16,28 +17,18 @@ class _BlogPageState extends State<BlogPage> {
   final picker = ImagePicker();
   final tituloController = TextEditingController();
   File? selectedImage;
-  String? rol;
+  Uint8List? imageBytes;
+  String rol = 'visualizador';
   List<Map<String, dynamic>> posts = [];
   bool isLoading = true;
 
   @override
   void initState() {
     super.initState();
-    fetchUserRoleAndPosts();
+    fetchPosts();
   }
 
-  Future<void> fetchUserRoleAndPosts() async {
-    final userId = supabase.auth.currentUser?.id;
-    if (userId != null) {
-      final response = await supabase
-          .from('perfiles')
-          .select('rol')
-          .eq('id', userId)
-          .maybeSingle();
-
-      rol = response?['rol'];
-    }
-
+  Future<void> fetchPosts() async {
     final response = await supabase
         .from('posts')
         .select()
@@ -52,14 +43,19 @@ class _BlogPageState extends State<BlogPage> {
   Future<void> pickImage(ImageSource source) async {
     final pickedFile = await picker.pickImage(source: source, maxWidth: 800, maxHeight: 800);
     if (pickedFile != null) {
+      final bytes = await pickedFile.readAsBytes();
       setState(() {
-        selectedImage = File(pickedFile.path);
+        imageBytes = bytes;
+        if (!kIsWeb) {
+          selectedImage = File(pickedFile.path);
+        }
       });
     }
   }
 
   Future<void> publicarPost() async {
-    if (selectedImage == null || tituloController.text.isEmpty) {
+    if (imageBytes == null || tituloController.text.isEmpty) {
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Falta subir una imagen o título')),
       );
@@ -69,29 +65,51 @@ class _BlogPageState extends State<BlogPage> {
     final userId = supabase.auth.currentUser?.id;
     final uuid = const Uuid().v4();
 
-    final fileExt = selectedImage!.path.split('.').last;
+    final fileExt = kIsWeb
+        ? 'jpg' 
+        : selectedImage!.path.split('.').last;
+
     final fileName = '$uuid.$fileExt';
     final filePath = 'posts/$fileName';
+    
 
-    final imageBytes = await selectedImage!.readAsBytes();
-
-    await supabase.storage
-        .from('imagenes')
-        .uploadBinary(filePath, imageBytes, fileOptions: const FileOptions(upsert: true));
+    try {
+      await supabase.storage
+          .from('imagenes')
+          .uploadBinary(filePath, imageBytes!, fileOptions: const FileOptions(upsert: true));
+    } catch (e) {
+      print('Error al subir la imagen: $e');
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error al subir la imagen: $e')),
+      );
+      return;
+    }
 
     final imageUrl = supabase.storage.from('imagenes').getPublicUrl(filePath);
 
-    await supabase.from('posts').insert({
-      'id': uuid,
-      'user_id': userId,
-      'titulo': tituloController.text,
-      'imagen_url': imageUrl,
-    });
+    try {
+      await supabase.from('posts').insert({
+        'id': uuid,
+        'user_id': userId,
+        'titulo': tituloController.text,
+        'imagen_url': imageUrl,
+      });
+    } catch (e) {
+      print('Error al guardar el post: $e');
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error al guardar el post: $e')),
+      );
+      return;
+    }
 
     tituloController.clear();
     selectedImage = null;
-    fetchUserRoleAndPosts();
+    imageBytes = null;
+    await fetchPosts();
 
+    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('Publicación creada')),
     );
@@ -109,16 +127,38 @@ class _BlogPageState extends State<BlogPage> {
       appBar: AppBar(
         title: const Text('Turismo Ciudadano'),
         automaticallyImplyLeading: false,
+        actions: [
+          DropdownButton<String>(
+            value: rol,
+            onChanged: (String? newValue) {
+              if (newValue != null) {
+                setState(() {
+                  rol = newValue;
+                });
+              }
+            },
+            dropdownColor: Colors.white,
+            style: const TextStyle(color: Colors.black, fontWeight: FontWeight.bold),
+            items: ['publicador', 'visualizador']
+                .map<DropdownMenuItem<String>>((String value) {
+              return DropdownMenuItem<String>(
+                value: value,
+                child: Text('Rol: $value'),
+              );
+            }).toList(),
+          ),
+        ],
       ),
       body: isLoading
           ? const Center(child: CircularProgressIndicator())
           : RefreshIndicator(
-              onRefresh: fetchUserRoleAndPosts,
+              onRefresh: fetchPosts,
               child: ListView(
                 padding: const EdgeInsets.all(16),
                 children: [
                   if (isPublicador) ...[
-                    const Text('Publicar un nuevo lugar', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                    const Text('Publicar un nuevo lugar',
+                        style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
                     const SizedBox(height: 10),
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceAround,
@@ -135,10 +175,10 @@ class _BlogPageState extends State<BlogPage> {
                         ),
                       ],
                     ),
-                    if (selectedImage != null)
+                    if (imageBytes != null)
                       Padding(
                         padding: const EdgeInsets.symmetric(vertical: 8),
-                        child: Image.file(selectedImage!, height: 200),
+                        child: Image.memory(imageBytes!, height: 200),
                       ),
                     TextField(
                       controller: tituloController,
@@ -152,7 +192,8 @@ class _BlogPageState extends State<BlogPage> {
                     ),
                     const Divider(height: 32),
                   ],
-                  const Text('Lugares publicados', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                  const Text('Lugares publicados',
+                      style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
                   const SizedBox(height: 10),
                   ...posts.map((post) => Card(
                         margin: const EdgeInsets.symmetric(vertical: 8),
@@ -164,7 +205,8 @@ class _BlogPageState extends State<BlogPage> {
                               padding: const EdgeInsets.all(8),
                               child: Text(
                                 post['titulo'],
-                                style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                                style: const TextStyle(
+                                    fontSize: 16, fontWeight: FontWeight.bold),
                               ),
                             ),
                           ],
@@ -178,8 +220,10 @@ class _BlogPageState extends State<BlogPage> {
                       label: const Text('Cerrar sesión'),
                       style: ElevatedButton.styleFrom(
                         backgroundColor: Colors.redAccent,
-                        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                        padding:
+                            const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(10)),
                       ),
                     ),
                   ),

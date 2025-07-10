@@ -2,8 +2,8 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'login_page.dart';
-import 'rol_page.dart';
 import 'blog_page.dart';
+
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -121,11 +121,7 @@ class _AuthGateState extends State<AuthGate> {
       return const LoginPage();
     }
 
-    if (userRole == null) {
-      return RolPage(onRoleAssigned: () {
-        _loadUserRole();
-      });
-    }
+   
 
     return const BlogPage();
   }
